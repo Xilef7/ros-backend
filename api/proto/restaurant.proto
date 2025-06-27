@@ -1,0 +1,256 @@
+edition = "2023";
+
+package restaurant;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/go_features.proto";
+
+option go_package = "restaurant-ordering-system/api/proto;proto";
+option features.(pb.go).api_level = API_OPAQUE;
+
+service CustomerService {
+  rpc CreateCustomer(CreateCustomerRequest) returns (Customer) {}
+  rpc GetCustomerByID(GetCustomerByIDRequest) returns (Customer) {}
+}
+
+service AuthService {
+  rpc GenerateToken(GenerateTokenRequest) returns (GenerateTokenResponse) {}
+}
+
+service MenuService {
+  rpc CreateMenuItem(CreateMenuItemRequest) returns (MenuItem) {}
+  rpc GetMenuItem(GetMenuItemRequest) returns (MenuItem) {}
+  rpc ListMenuItems(google.protobuf.Empty) returns (ListMenuItemsResponse) {}
+  rpc UpdateMenuItem(UpdateMenuItemRequest) returns (MenuItem) {}
+  rpc DeleteMenuItem(DeleteMenuItemRequest) returns (google.protobuf.Empty) {}
+}
+
+service OrderService {
+  rpc CreateOrderItem(CreateOrderItemRequest) returns (OrderItemID) {}
+  rpc DeleteOrderItem(DeleteOrderItemRequest) returns (google.protobuf.Empty) {}
+  rpc UpdateOrderItemModifiers(UpdateOrderItemModifiersRequest) returns (google.protobuf.Empty) {}
+  rpc UpdateOrderItemQuantity(UpdateOrderItemQuantityRequest) returns (google.protobuf.Empty) {}
+  rpc AddOrderItemGuestOwner(AddOrderItemGuestOwnerRequest) returns (google.protobuf.Empty) {}
+  rpc RemoveOrderItemGuestOwner(RemoveOrderItemGuestOwnerRequest) returns (google.protobuf.Empty) {}
+  rpc AddOrderItemCustomerOwner(AddOrderItemCustomerOwnerRequest) returns (google.protobuf.Empty) {}
+  rpc RemoveOrderItemCustomerOwner(RemoveOrderItemCustomerOwnerRequest) returns (google.protobuf.Empty) {}
+  rpc SendOrder(SendOrderRequest) returns (google.protobuf.Empty) {}
+}
+
+service TabService {
+  rpc CreateTab(google.protobuf.Empty) returns (TabID) {}
+  rpc VisitTab(VisitTabRequest) returns (google.protobuf.Empty) {}
+  rpc CreateGuest(CreateGuestRequest) returns (GuestID) {}
+  rpc UpdateGuestName(UpdateGuestNameRequest) returns (google.protobuf.Empty) {}
+  rpc GetOpenTab(GetOpenTabRequest) returns (Tab) {}
+  rpc CloseTab(CloseTabRequest) returns (CloseTabResponse) {}
+  rpc GetVisitedTabs(GetVisitedTabsRequest) returns (GetVisitedTabsResponse) {}
+}
+
+message CreateCustomerRequest {
+  string login_id = 1;
+  string email = 2;
+  string password = 3;
+  string name = 4;
+  string phone_number = 5;
+}
+
+message GetCustomerByIDRequest {
+  string id = 1;
+}
+
+message Customer {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  string phone_number = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message GenerateTokenRequest {
+  string login_id = 1;
+  string password = 2;
+}
+
+message GenerateTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 expires_in = 3;
+}
+
+message CreateMenuItemRequest {
+  MenuItem menu_item = 1;
+}
+
+message GetMenuItemRequest {
+  string id = 1;
+}
+
+message ListMenuItemsResponse {
+  repeated MenuItem items = 1;
+}
+
+message UpdateMenuItemRequest {
+  MenuItem menu_item = 1;
+}
+
+message DeleteMenuItemRequest {
+  string id = 1;
+}
+
+message CreateOrderItemRequest {
+  string order_id = 1;
+  string menu_item_id = 2;
+  int32 quantity = 3;
+  bytes modifiers = 4;
+  repeated string guest_owner_ids = 5;
+  repeated string customer_owner_ids = 6;
+}
+
+message OrderItemID {
+  string id = 1;
+}
+
+message DeleteOrderItemRequest {
+  string id = 1;
+}
+
+message UpdateOrderItemModifiersRequest {
+  string order_item_id = 1;
+  bytes modifiers = 2;
+}
+
+message UpdateOrderItemQuantityRequest {
+  string order_item_id = 1;
+  int32 quantity = 2;
+}
+
+message AddOrderItemGuestOwnerRequest {
+  string order_item_id = 1;
+  string guest_id = 2;
+}
+
+message RemoveOrderItemGuestOwnerRequest {
+  string order_item_id = 1;
+  string guest_id = 2;
+}
+
+message AddOrderItemCustomerOwnerRequest {
+  string order_item_id = 1;
+  string customer_id = 2;
+}
+
+message RemoveOrderItemCustomerOwnerRequest {
+  string order_item_id = 1;
+  string customer_id = 2;
+}
+
+message SendOrderRequest {
+  string order_id = 1;
+}
+
+message TabID {
+  string id = 1;
+}
+
+message VisitTabRequest {
+  string tab_id = 1;
+  string customer_id = 2;
+}
+
+message CreateGuestRequest {
+  string tab_id = 1;
+}
+
+message GuestID {
+  string id = 1;
+}
+
+message UpdateGuestNameRequest {
+  string guest_id = 1;
+  string name = 2;
+}
+
+message GetOpenTabRequest {
+  string tab_id = 1;
+}
+
+message CloseTabRequest {
+  string tab_id = 1;
+}
+
+message CloseTabResponse {
+  google.protobuf.Timestamp closed_at = 1;
+}
+
+message GetVisitedTabsRequest {
+  string customer_id = 1;
+}
+
+message GetVisitedTabsResponse {
+  repeated Tab tabs = 1;
+}
+
+message Tab {
+  string id = 1;
+  int32 total_price = 2;
+  repeated Order orders = 3;
+  map<string, string> custom_guest_names = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp closed_at = 6;
+}
+
+message Order {
+  string id = 1;
+  repeated OrderItem items = 2;
+  google.protobuf.Timestamp sent_at = 3;
+}
+
+message OrderItem {
+  string id = 1;
+  int32 quantity = 2;
+  bytes modifiers = 3;
+  repeated string guest_owner_ids = 4;
+  repeated string customer_owner_ids = 5;
+  string menu_item_id = 6;
+  string name = 7;
+  string description = 8;
+  string photo_pathinfo = 9;
+  int32 price = 10;
+  int32 portion_size = 11;
+  bytes modifiers_config = 12;
+}
+
+message MenuItem {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string photo_pathinfo = 4;
+  int32 price = 5;
+  int32 portion_size = 6;
+  bool available = 7;
+  bytes modifiers_config = 8;
+  repeated MenuTag menu_tags = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp deleted_at = 11;
+}
+
+message MenuTag {
+  string id = 1;
+  string value = 2;
+  string description = 3;
+  MenuTagDimension dimension = 4;
+  repeated MenuTag prerequisites = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message MenuTagDimension {
+  string id = 1;
+  string value = 2;
+  string description = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}

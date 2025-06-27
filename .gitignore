@@ -1,0 +1,57 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Go build artifacts
+/bin/
+/pkg/
+/dist/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# IDEs and editors
+.idea/
+*.iml
+.vscode/
+
+# Git
+*.orig
+
+# Go environment and secrets
+.env
+.env.*
+
+# TLS certificates
+/certs/
+
+# Coverage and testing
+coverage.out
+
+# Dependency directories
+dep/
+
+# Docker
+docker-compose.override.yml
+docker-compose*.env
+**/.dockerignore
+*.tar
+*.img
+*.container
+
+# Optional Docker build cache or volumes
+docker-data/
+.docker/
+.docker-cache/
