@@ -8,9 +8,11 @@ import (
 
 	"restaurant-ordering-system/internal/pkg/model"
 	"restaurant-ordering-system/internal/pkg/repository"
+	"restaurant-ordering-system/internal/pkg/repository/cache"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 func NewTab(repoTab repository.TabWithOrders) *model.Tab {
@@ -44,14 +46,20 @@ func NewTab(repoTab repository.TabWithOrders) *model.Tab {
 }
 
 type TabService struct {
-	db      *pgxpool.Pool
-	queries *repository.Queries
+	db           *pgxpool.Pool
+	rdb          *redis.Client
+	queries      *repository.Queries
+	rqueries     *cache.RedisQueries
+	cacheService *CacheService
 }
 
-func NewTabService(db *pgxpool.Pool) *TabService {
+func NewTabService(db *pgxpool.Pool, rdb *redis.Client, cacheService *CacheService) *TabService {
 	return &TabService{
-		db:      db,
-		queries: repository.New(db),
+		db:           db,
+		rdb:          rdb,
+		queries:      repository.New(db),
+		rqueries:     cache.New(rdb),
+		cacheService: cacheService,
 	}
 }
 
@@ -63,10 +71,11 @@ func (s *TabService) CreateTab(ctx context.Context) (model.TabID, error) {
 	defer tx.Rollback(ctx)
 	qtx := s.queries.WithTx(tx)
 
-	tabID, err := qtx.CreateTab(ctx)
+	row, err := qtx.CreateTab(ctx)
 	if err != nil {
 		return model.TabID{}, err
 	}
+	tabID := row.ID
 	if err := qtx.CreateGuestIDSequence(ctx, tabID); err != nil {
 		return model.TabID{}, err
 	}
@@ -77,16 +86,14 @@ func (s *TabService) CreateTab(ctx context.Context) (model.TabID, error) {
 	if err != nil {
 		return model.TabID{}, err
 	}
-	if err := qtx.CreateOrderItemIDSequence(ctx, repository.CreateOrderItemIDSequenceParams{
-		TabID:   tabID,
-		OrderID: orderID,
-	}); err != nil {
-		return model.TabID{}, err
-	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return model.TabID{}, err
 	}
+
+	s.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		return cache.New(p).CreateTab(ctx, model.TabID(row.ID), row.CreatedAt.Time, model.ScopedOrderID(orderID))
+	})
 
 	return model.TabID(tabID), nil
 }
@@ -122,21 +129,47 @@ func (s *TabService) CreateGuest(ctx context.Context, tabID model.TabID) (model.
 }
 
 func (s *TabService) UpdateGuestName(ctx context.Context, guestID model.GuestID, name string) error {
-	return s.checkTabNotClosed(ctx, guestID.TabID, func(qtx *repository.Queries) error {
+	if len(name) == 0 {
+		return errors.New("name is empty")
+	}
+
+	if err := s.checkTabNotClosed(ctx, guestID.TabID, func(qtx *repository.Queries) error {
 		return qtx.UpdateGuestName(ctx, repository.UpdateGuestNameParams{
 			ID:       uuid.UUID(guestID.TabID),
 			ScopedID: int16(guestID.Scoped),
 			Name:     name,
 		})
-	})
+	}); err != nil {
+		return err
+	}
+
+	if _, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		cache.New(p).UpdateGuestName(ctx, guestID.TabID, guestID.Scoped, name)
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (s *TabService) GetOpenTab(ctx context.Context, tabID model.TabID) (*model.Tab, error) {
-	tab, err := s.queries.GetOpenTabWithOrders(ctx, uuid.UUID(tabID))
+	tab, err := s.rqueries.GetOpenTabWithOrders(ctx, tabID)
 	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			if tab, err := s.cacheService.GetAndCacheTab(ctx, tabID); tab != nil {
+				if tab.ClosedAt != nil {
+					return nil, errors.New("tab is already closed")
+				}
+				return tab, nil
+			} else {
+				return nil, err
+			}
+		}
 		return nil, err
 	}
-	return NewTab(tab), nil
+
+	return tab, nil
 }
 
 func (s *TabService) CloseTab(ctx context.Context, tabID model.TabID) (time.Time, error) {
@@ -157,17 +190,8 @@ func (s *TabService) CloseTab(ctx context.Context, tabID model.TabID) (time.Time
 		return time.Time{}, errors.New("tab is already closed")
 	}
 
-	scopedOrderIDs, err := qtx.DeleteNotSentOrders(ctx, closedTabID)
-	if err != nil {
+	if err := qtx.DeleteNotSentOrders(ctx, closedTabID); err != nil {
 		return time.Time{}, err
-	}
-	for _, scopedOrderID := range scopedOrderIDs {
-		if err := qtx.DeleteOrderItemIDSequence(ctx, repository.DeleteOrderItemIDSequenceParams{
-			TabID:   closedTabID,
-			OrderID: scopedOrderID,
-		}); err != nil {
-			return time.Time{}, err
-		}
 	}
 	if err := qtx.DeleteOrderIDSequence(ctx, closedTabID); err != nil {
 		return time.Time{}, err
@@ -179,12 +203,35 @@ func (s *TabService) CloseTab(ctx context.Context, tabID model.TabID) (time.Time
 	if err != nil {
 		return time.Time{}, err
 	}
+	tab.ClosedAt = closedAtPg
+	closedAt := closedAtPg.Time
+
+	if err := s.rdb.Watch(ctx, func(tx *redis.Tx) error {
+		_, orderItemIDs, err := cache.WatchAndGetNotSentOrderIDAndItemIDs(ctx, tx, tabID)
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				return nil // Already invalidated
+			}
+			return err
+		}
+		if _, err := tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
+			cache.New(p).InvalidateTab(ctx, tabID, orderItemIDs)
+			return nil
+		}); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		return time.Time{}, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return time.Time{}, err
 	}
 
-	return closedAtPg.Time, nil
+	go s.cacheService.GetAndCacheTab(ctx, tabID)
+
+	return closedAt, nil
 }
 
 func (s *TabService) checkTabNotClosed(ctx context.Context, tabID model.TabID, do func(qtx *repository.Queries) error) error {

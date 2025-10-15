@@ -17,6 +17,10 @@ func (id TabID) MarshalText() ([]byte, error) {
 	return []byte(id.String()), nil
 }
 
+func (id TabID) MarshalBinary() ([]byte, error) {
+	return []byte(id.String()), nil
+}
+
 func ParseTabID(s string) (TabID, error) {
 	u, err := uuid.Parse(s)
 	return TabID(u), err
@@ -27,13 +31,21 @@ type GuestID struct {
 	Scoped ScopedGuestID
 }
 
-type ScopedGuestID int16
-
 func (id GuestID) String() string {
 	return id.TabID.String() + "." + strconv.FormatInt(int64(id.Scoped), 10)
 }
 
 func (id GuestID) MarshalText() ([]byte, error) {
+	return []byte(id.String()), nil
+}
+
+type ScopedGuestID int16
+
+func (id ScopedGuestID) String() string {
+	return strconv.FormatInt(int64(id), 10)
+}
+
+func (id ScopedGuestID) MarshalBinary() ([]byte, error) {
 	return []byte(id.String()), nil
 }
 
@@ -61,13 +73,21 @@ type OrderID struct {
 	Scoped ScopedOrderID
 }
 
-type ScopedOrderID int16
-
 func (id OrderID) String() string {
 	return id.TabID.String() + "." + strconv.FormatInt(int64(id.Scoped), 10)
 }
 
 func (id OrderID) MarshalText() ([]byte, error) {
+	return []byte(id.String()), nil
+}
+
+type ScopedOrderID int16
+
+func (id ScopedOrderID) String() string {
+	return strconv.FormatInt(int64(id), 10)
+}
+
+func (id ScopedOrderID) MarshalBinary() ([]byte, error) {
 	return []byte(id.String()), nil
 }
 
@@ -95,13 +115,21 @@ type OrderItemID struct {
 	Scoped  ScopedOrderItemID
 }
 
-type ScopedOrderItemID int16
-
 func (id OrderItemID) String() string {
-	return id.OrderID.String() + "." + strconv.FormatInt(int64(id.Scoped), 10)
+	return id.OrderID.String() + "." + id.Scoped.String()
 }
 
 func (id OrderItemID) MarshalText() ([]byte, error) {
+	return []byte(id.String()), nil
+}
+
+type ScopedOrderItemID int16
+
+func (id ScopedOrderItemID) String() string {
+	return strconv.FormatInt(int64(id), 10)
+}
+
+func (id ScopedOrderItemID) MarshalBinary() ([]byte, error) {
 	return []byte(id.String()), nil
 }
 
@@ -143,6 +171,10 @@ func (id *CustomerID) UnmarshalText(b []byte) error {
 	return nil
 }
 
+func (id CustomerID) MarshalBinary() ([]byte, error) {
+	return []byte(id.String()), nil
+}
+
 func ParseCustomerID(s string) (CustomerID, error) {
 	u, err := uuid.Parse(s)
 	return CustomerID(u), err
@@ -155,6 +187,10 @@ func (id MenuItemID) String() string {
 }
 
 func (id MenuItemID) MarshalText() ([]byte, error) {
+	return []byte(id.String()), nil
+}
+
+func (id MenuItemID) MarshalBinary() ([]byte, error) {
 	return []byte(id.String()), nil
 }
 

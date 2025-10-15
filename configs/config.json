@@ -11,6 +11,10 @@
         "database": "restaurant",
         "sslMode": "disable"
     },
+    "redis": {
+        "host": "localhost",
+        "port": 6379
+    },
     "jwt": {
         "secret": "secret",
         "expiry": "3h"

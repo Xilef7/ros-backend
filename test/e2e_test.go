@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"golang.org/x/oauth2"
@@ -59,7 +60,14 @@ func TestEndToEndFlow(t *testing.T) {
 	testcontainers.CleanupContainer(t, pgC)
 	require.NoError(t, err, "failed to start postgres container")
 
-	// 5. Start gRPC server in docker container
+	// 5. Start Redis container
+	rC, err := redis.Run(context.Background(), "redis:8",
+		network.WithNetwork([]string{cfg.Redis.Host}, net),
+	)
+	testcontainers.CleanupContainer(t, rC)
+	require.NoError(t, err, "failed to start redis container")
+
+	// 6. Start gRPC server in docker container
 	svrPort, err := nat.NewPort("tcp", strconv.Itoa(cfg.Server.Port))
 	require.NoError(t, err, "failed to create port instance")
 
@@ -88,7 +96,7 @@ func TestEndToEndFlow(t *testing.T) {
 	testcontainers.CleanupContainer(t, svrC)
 	require.NoError(t, err, "failed to start server container")
 
-	// 6. Create gRPC client
+	// 7. Create gRPC client
 	svrHost, err := svrC.Host(t.Context())
 	require.NoError(t, err, "failed to get server host")
 
@@ -102,14 +110,14 @@ func TestEndToEndFlow(t *testing.T) {
 	require.NoError(t, err, "failed to create gRPC channel")
 	defer conn.Close()
 
-	// 7. Create gRPC clients
+	// 8. Create gRPC clients
 	customerClient := proto.NewCustomerServiceClient(conn)
 	authClient := proto.NewAuthServiceClient(conn)
 	menuClient := proto.NewMenuServiceClient(conn)
 	orderClient := proto.NewOrderServiceClient(conn)
 	tabClient := proto.NewTabServiceClient(conn)
 
-	// 8. Get admin token
+	// 9. Get admin token
 	adminToken, err := auth.GenerateAdminJWT([]byte(cfg.JWT.Secret), time.Minute)
 	require.NoError(t, err)
 	require.NotEmpty(t, adminToken)
@@ -122,7 +130,7 @@ func TestEndToEndFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	// 9. Initialize menu
+	// 10. Initialize menu
 	createMenuReq := &proto.CreateMenuItemRequest{}
 	menuItem := &proto.MenuItem{}
 	menuItem.SetName("Test Menu")
@@ -134,7 +142,7 @@ func TestEndToEndFlow(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, createMenuResp.GetId())
 
-	// 10. Create customer
+	// 11. Create customer
 	loginID := "testcustomer"
 	password := "testcustomer"
 	custReq := &proto.CreateCustomerRequest{}
@@ -147,7 +155,7 @@ func TestEndToEndFlow(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, cust.GetName())
 
-	// 11. Simulate E2E flow
+	// 12. Simulate E2E flow
 	// a. Login as customer
 	genTokenReq := &proto.GenerateTokenRequest{}
 	genTokenReq.SetLoginId(loginID)

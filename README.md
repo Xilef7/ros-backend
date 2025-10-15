@@ -88,6 +88,10 @@ Configuration is handled through a JSON file located at `configs/config.json`. T
         "database": "restaurant",
         "sslMode": "disable"
     },
+    "redis": {
+        "host": "localhost",
+        "port": 6379,
+    }
 }
 ```
 

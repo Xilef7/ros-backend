@@ -11,6 +11,10 @@
         "database": "testdb",
         "sslMode": "disable"
     },
+    "redis": {
+        "host": "redis",
+        "port": 6379
+    },
     "jwt": {
         "secret": "secret",
         "expiry": "1s"

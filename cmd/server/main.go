@@ -9,9 +9,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
@@ -57,6 +59,10 @@ func main() {
 	}
 	defer dbpool.Close()
 
+	rdb := redis.NewClient(&redis.Options{
+		Addr: cfg.Redis.Host + ":" + strconv.Itoa(cfg.Redis.Port),
+	})
+
 	// Initialize JWT generator
 	jwtGenerator := auth.NewCustomerJWTGenerator([]byte(cfg.JWT.Secret), cfg.JWT.Expiry)
 
@@ -64,8 +70,9 @@ func main() {
 	customerService := service.NewCustomerService(dbpool)
 	authService := service.NewAuthService(dbpool, jwtGenerator)
 	menuService := service.NewMenuService(dbpool)
-	orderService := service.NewOrderService(dbpool)
-	tabService := service.NewTabService(dbpool)
+	cacheService := service.NewCacheService(dbpool, rdb)
+	orderService := service.NewOrderService(dbpool, rdb, cacheService)
+	tabService := service.NewTabService(dbpool, rdb, cacheService)
 
 	// Initialize JWT parser
 	jwtParser := auth.NewJWTParser([]byte(cfg.JWT.Secret))

@@ -7,9 +7,11 @@ import (
 
 	"restaurant-ordering-system/internal/pkg/model"
 	"restaurant-ordering-system/internal/pkg/repository"
+	"restaurant-ordering-system/internal/pkg/repository/cache"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 func NewOrder(repoOrder repository.OrderWithItems) *model.Order {
@@ -68,147 +70,181 @@ func NewOrderItem(repoItem repository.OrderItemWithMenu) *model.OrderItem {
 }
 
 type OrderService struct {
-	db      *pgxpool.Pool
-	queries *repository.Queries
+	db           *pgxpool.Pool
+	rdb          *redis.Client
+	queries      *repository.Queries
+	rqueries     *cache.RedisQueries
+	cacheService *CacheService
 }
 
-func NewOrderService(db *pgxpool.Pool) *OrderService {
+func NewOrderService(db *pgxpool.Pool, rdb *redis.Client, cacheService *CacheService) *OrderService {
 	return &OrderService{
-		db:      db,
-		queries: repository.New(db),
+		db:           db,
+		rdb:          rdb,
+		queries:      repository.New(db),
+		rqueries:     cache.New(rdb),
+		cacheService: cacheService,
 	}
 }
 
 func (s *OrderService) CreateOrderItem(ctx context.Context, params model.CreateOrderItemParams) (model.OrderItemID, error) {
-	var scopedID model.ScopedOrderItemID
-	if err := s.checkOrderNotSent(ctx, params.OrderID, func(qtx *repository.Queries) error {
-		tabID := uuid.UUID(params.OrderID.TabID)
+	if params.Quantity < 1 {
+		return model.OrderItemID{}, errors.New("quantity is < 1")
+	}
 
-		visitingGuestIDs := make([]int16, 0)
-		for _, guestID := range params.GuestOwnerIDs {
-			if guestID.TabID == params.OrderID.TabID {
-				visitingGuestIDs = append(visitingGuestIDs, int16(guestID.Scoped))
-			}
+	menuItem, err := s.queries.GetNotDeletedMenuItem(ctx, int16(params.MenuItemID))
+	if err != nil {
+		return model.OrderItemID{}, err
+	}
+	if !menuItem.Available {
+		return model.OrderItemID{}, errors.New("menu item is not available")
+	}
+
+	visitingGuestIDs := make([]model.GuestID, 0, len(params.GuestOwnerIDs))
+	for _, guestID := range params.GuestOwnerIDs {
+		if guestID.TabID == params.OrderID.TabID {
+			visitingGuestIDs = append(visitingGuestIDs, guestID)
 		}
+	}
 
-		customerIDs := make([]uuid.UUID, len(params.CustomerOwnerIDs))
-		for i, id := range params.CustomerOwnerIDs {
-			customerIDs[i] = uuid.UUID(id)
-		}
+	customerIDs := make([]uuid.UUID, len(params.CustomerOwnerIDs))
+	for i, id := range params.CustomerOwnerIDs {
+		customerIDs[i] = uuid.UUID(id)
+	}
+	visitingCustomerIDs, err := s.queries.IsVisitingCustomerIDs(ctx, repository.IsVisitingCustomerIDsParams{
+		TabID:       uuid.UUID(params.OrderID.TabID),
+		CustomerIds: customerIDs,
+	})
+	if err != nil {
+		return model.OrderItemID{}, err
+	}
 
-		visitingCustomerIDs, err := qtx.IsVisitingCustomerIDs(ctx, repository.IsVisitingCustomerIDsParams{
-			TabID:       tabID,
-			CustomerIds: customerIDs,
-		})
+	var orderItemID model.OrderItemID
+	if err := s.checkOrderNotSent(ctx, params.OrderID, func(tx *redis.Tx) error {
+		scopedID, err := cache.New(tx).GetNextOrderItemID(ctx, params.OrderID)
 		if err != nil {
 			return err
 		}
-
-		scopedIDInt, err := qtx.CreateOrderItem(ctx, repository.CreateOrderItemParams{
-			TabID:          tabID,
-			OrderID:        int16(params.OrderID.Scoped),
-			MenuItemID:     int16(params.MenuItemID),
-			Quantity:       params.Quantity,
-			Modifiers:      params.Modifiers,
-			GuestOwners:    visitingGuestIDs,
-			CustomerOwners: visitingCustomerIDs,
-		})
-		if err != nil {
-			return err
+		orderItemID = model.OrderItemID{
+			OrderID: params.OrderID,
+			Scoped:  scopedID,
+		}
+		customerOwnerIDs := make([]model.CustomerID, len(visitingCustomerIDs))
+		for i, id := range visitingCustomerIDs {
+			customerOwnerIDs[i] = model.CustomerID(id)
 		}
 
-		scopedID = model.ScopedOrderItemID(scopedIDInt)
+		if _, err := tx.Pipelined(ctx, func(p redis.Pipeliner) error {
+			cache.New(p).CreateOrderItem(ctx, &model.OrderItem{
+				ID:               orderItemID,
+				Quantity:         params.Quantity,
+				Modifiers:        params.Modifiers,
+				GuestOwnerIDs:    visitingGuestIDs,
+				CustomerOwnerIDs: customerOwnerIDs,
+				MenuItemID:       params.MenuItemID,
+				Name:             menuItem.Name,
+				Description:      menuItem.Description.String,
+				PhotoPathinfo:    menuItem.PhotoPathinfo.String,
+				Price:            menuItem.Price,
+				PortionSize:      menuItem.PortionSize,
+				ModifiersConfig:  menuItem.ModifiersConfig,
+			})
+			return nil
+		}); err != nil {
+			return err
+		}
 
 		return nil
 	}); err != nil {
 		return model.OrderItemID{}, err
 	}
 
-	return model.OrderItemID{
-		OrderID: params.OrderID,
-		Scoped:  scopedID,
-	}, nil
+	return orderItemID, nil
 }
 
 func (s *OrderService) DeleteOrderItem(ctx context.Context, orderItemID model.OrderItemID) error {
-	return s.checkOrderNotSent(ctx, orderItemID.OrderID, func(qtx *repository.Queries) error {
-		return qtx.DeleteOrderItem(ctx, repository.DeleteOrderItemParams{
-			TabID:    uuid.UUID(orderItemID.OrderID.TabID),
-			OrderID:  int16(orderItemID.OrderID.Scoped),
-			ScopedID: int16(orderItemID.Scoped),
-		})
+	return s.checkOrderItemNotSent(ctx, orderItemID, func(q *cache.RedisQueries) {
+		q.DeleteOrderItem(ctx, orderItemID)
 	})
 }
 
 func (s *OrderService) UpdateOrderItemModifiers(ctx context.Context, orderItemID model.OrderItemID, modifiers []byte) error {
-	return s.checkOrderNotSent(ctx, orderItemID.OrderID, func(qtx *repository.Queries) error {
-		return qtx.UpdateOrderItemModifiers(ctx, repository.UpdateOrderItemModifiersParams{
-			TabID:     uuid.UUID(orderItemID.OrderID.TabID),
-			OrderID:   int16(orderItemID.OrderID.Scoped),
-			ScopedID:  int16(orderItemID.Scoped),
-			Modifiers: modifiers,
-		})
+	return s.checkOrderItemNotSent(ctx, orderItemID, func(q *cache.RedisQueries) {
+		q.UpdateOrderItemModifiers(ctx, orderItemID, modifiers)
 	})
 }
 
 func (s *OrderService) UpdateOrderItemQuantity(ctx context.Context, orderItemID model.OrderItemID, quantity int16) error {
-	return s.checkOrderNotSent(ctx, orderItemID.OrderID, func(qtx *repository.Queries) error {
-		return qtx.UpdateOrderItemQuantity(ctx, repository.UpdateOrderItemQuantityParams{
-			TabID:    uuid.UUID(orderItemID.OrderID.TabID),
-			OrderID:  int16(orderItemID.OrderID.Scoped),
-			ScopedID: int16(orderItemID.Scoped),
-			Quantity: quantity,
-		})
+	return s.checkOrderItemNotSent(ctx, orderItemID, func(q *cache.RedisQueries) {
+		q.UpdateOrderItemQuantity(ctx, orderItemID, quantity)
 	})
 }
 
 func (s *OrderService) AddOrderItemGuestOwner(ctx context.Context, orderItemID model.OrderItemID, guestID model.GuestID) error {
-	return s.checkOrderNotSent(ctx, orderItemID.OrderID, func(qtx *repository.Queries) error {
-		return qtx.AddOrderItemGuestOwner(ctx, repository.AddOrderItemGuestOwnerParams{
-			TabID:    uuid.UUID(orderItemID.OrderID.TabID),
-			OrderID:  int16(orderItemID.OrderID.Scoped),
-			ScopedID: int16(orderItemID.Scoped),
-			GuestID:  int16(guestID.Scoped),
-		})
+	return s.checkOrderItemNotSent(ctx, orderItemID, func(q *cache.RedisQueries) {
+		q.AddOrderItemGuestOwner(ctx, orderItemID, guestID)
 	})
 }
 
 func (s *OrderService) RemoveOrderItemGuestOwner(ctx context.Context, orderItemID model.OrderItemID, guestID model.GuestID) error {
-	return s.checkOrderNotSent(ctx, orderItemID.OrderID, func(qtx *repository.Queries) error {
-		return qtx.RemoveOrderItemGuestOwner(ctx, repository.RemoveOrderItemGuestOwnerParams{
-			TabID:    uuid.UUID(orderItemID.OrderID.TabID),
-			OrderID:  int16(orderItemID.OrderID.Scoped),
-			ScopedID: int16(orderItemID.Scoped),
-			GuestID:  int16(guestID.Scoped),
-		})
+	return s.checkOrderItemNotSent(ctx, orderItemID, func(q *cache.RedisQueries) {
+		q.RemoveOrderItemGuestOwner(ctx, orderItemID, guestID)
 	})
 }
 
 func (s *OrderService) AddOrderItemCustomerOwner(ctx context.Context, orderItemID model.OrderItemID, customerID model.CustomerID) error {
-	return s.checkOrderNotSent(ctx, orderItemID.OrderID, func(qtx *repository.Queries) error {
-		return qtx.AddOrderItemCustomerOwner(ctx, repository.AddOrderItemCustomerOwnerParams{
-			TabID:      uuid.UUID(orderItemID.OrderID.TabID),
-			OrderID:    int16(orderItemID.OrderID.Scoped),
-			ScopedID:   int16(orderItemID.Scoped),
-			CustomerID: uuid.UUID(customerID),
-		})
+	return s.checkOrderItemNotSent(ctx, orderItemID, func(q *cache.RedisQueries) {
+		q.AddOrderItemCustomerOwner(ctx, orderItemID, customerID)
 	})
 }
 
 func (s *OrderService) RemoveOrderItemCustomerOwner(ctx context.Context, orderItemID model.OrderItemID, customerID model.CustomerID) error {
-	return s.checkOrderNotSent(ctx, orderItemID.OrderID, func(qtx *repository.Queries) error {
-		return qtx.RemoveOrderItemCustomerOwner(ctx, repository.RemoveOrderItemCustomerOwnerParams{
-			TabID:      uuid.UUID(orderItemID.OrderID.TabID),
-			OrderID:    int16(orderItemID.OrderID.Scoped),
-			ScopedID:   int16(orderItemID.Scoped),
-			CustomerID: uuid.UUID(customerID),
-		})
+	return s.checkOrderItemNotSent(ctx, orderItemID, func(q *cache.RedisQueries) {
+		q.RemoveOrderItemCustomerOwner(ctx, orderItemID, customerID)
 	})
 }
 
-func (s *OrderService) SendOrder(ctx context.Context, orderID model.OrderID) error {
-	tabID := uuid.UUID(orderID.TabID)
-	sentOrderID := int16(orderID.Scoped)
+func (s *OrderService) checkOrderItemNotSent(ctx context.Context, id model.OrderItemID, fn func(q *cache.RedisQueries)) error {
+	return s.checkOrderNotSent(ctx, id.OrderID, func(tx *redis.Tx) error {
+		_, err := tx.Pipelined(ctx, func(p redis.Pipeliner) error {
+			fn(cache.New(p))
+			return nil
+		})
+		return err
+	})
+}
+
+func (s *OrderService) checkOrderNotSent(ctx context.Context, id model.OrderID, fn func(tx *redis.Tx) error) error {
+	return s.rdb.Watch(ctx, func(tx *redis.Tx) error {
+		ok, err := cache.WatchAndCheckOrderNotSent(ctx, tx, id)
+		if err != nil {
+			if !errors.Is(err, redis.Nil) {
+				return err
+			}
+
+			if err := tx.Unwatch(ctx).Err(); err != nil {
+				return err
+			}
+
+			if _, err := s.cacheService.GetAndCacheTab(ctx, id.TabID); err != nil {
+				return err
+			}
+
+			ok, err = cache.WatchAndCheckOrderNotSent(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+		}
+		if !ok {
+			return errors.New("order is already sent")
+		}
+
+		return fn(tx)
+	})
+}
+
+func (s *OrderService) SendOrder(ctx context.Context, toBeSentOrderID model.OrderID) error {
+	tabID := uuid.UUID(toBeSentOrderID.TabID)
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -224,39 +260,70 @@ func (s *OrderService) SendOrder(ctx context.Context, orderID model.OrderID) err
 	if tab.ClosedAt.Valid {
 		return errors.New("tab is already closed")
 	}
-	order, err := qtx.GetOrderForNoKeyUpdate(ctx, repository.GetOrderForNoKeyUpdateParams{
-		TabID:    tabID,
-		ScopedID: sentOrderID,
-	})
-	if err != nil {
-		return err
-	}
-	if order.SentAt.Valid {
-		return errors.New("order is already sent")
-	}
 
-	if err := qtx.DeleteOrderItemIDSequence(ctx, repository.DeleteOrderItemIDSequenceParams{
-		TabID:   tabID,
-		OrderID: sentOrderID,
-	}); err != nil {
-		return err
-	}
-	if err := qtx.SendOrder(ctx, repository.SendOrderParams{
-		TabID:    tabID,
-		ScopedID: sentOrderID,
-	}); err != nil {
-		return err
-	}
-	if err := qtx.UpdateTabTotalPrice(ctx, tabID); err != nil {
-		return err
-	}
-	nextOrderID, err := qtx.CreateOrder(ctx, tabID)
-	if err != nil {
-		return err
-	}
-	if err := qtx.CreateOrderItemIDSequence(ctx, repository.CreateOrderItemIDSequenceParams{
-		TabID:   tabID,
-		OrderID: nextOrderID,
+	if err := s.rdb.Watch(ctx, func(tx *redis.Tx) error {
+		var miss bool
+		notSentOrderID, orderItemIDs, err := cache.WatchAndGetNotSentOrderIDAndItemIDs(ctx, tx, toBeSentOrderID.TabID)
+		if err != nil {
+			if !errors.Is(err, redis.Nil) {
+				return err
+			}
+			miss = true
+			order, err := qtx.GetOrderWithItems(ctx, repository.GetOrderWithItemsParams{
+				TabID:    uuid.UUID(toBeSentOrderID.TabID),
+				ScopedID: int16(toBeSentOrderID.Scoped),
+			})
+			if err != nil {
+				return err
+			}
+			if order.SentAt.Valid {
+				return errors.New("order is already sent")
+			}
+			if len(order.Items) == 0 {
+				return errors.New("order is empty")
+			}
+		} else {
+			if notSentOrderID != toBeSentOrderID {
+				return errors.New("order is already sent")
+			}
+			if len(orderItemIDs) == 0 {
+				return errors.New("order is empty")
+			}
+			items, err := cache.WatchAndGetOrderItems(ctx, tx, orderItemIDs)
+			if err != nil {
+				return err
+			}
+			for i, item := range items {
+				orderItemIDs[i] = item.ID
+			}
+			if err := s.replaceOrderItems(ctx, toBeSentOrderID, items); err != nil {
+				return err
+			}
+		}
+
+		if err := qtx.SendOrder(ctx, repository.SendOrderParams{
+			TabID:    tabID,
+			ScopedID: int16(toBeSentOrderID.Scoped),
+		}); err != nil {
+			return err
+		}
+		if err := qtx.UpdateTabTotalPrice(ctx, tabID); err != nil {
+			return err
+		}
+		if _, err := qtx.CreateOrder(ctx, tabID); err != nil {
+			return err
+		}
+
+		if !miss {
+			if _, err := tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
+				cache.New(p).InvalidateTab(ctx, toBeSentOrderID.TabID, orderItemIDs)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -265,10 +332,12 @@ func (s *OrderService) SendOrder(ctx context.Context, orderID model.OrderID) err
 		return err
 	}
 
+	go s.cacheService.GetAndCacheTab(ctx, toBeSentOrderID.TabID)
+
 	return nil
 }
 
-func (s *OrderService) checkOrderNotSent(ctx context.Context, orderID model.OrderID, do func(qtx *repository.Queries) error) error {
+func (s *OrderService) replaceOrderItems(ctx context.Context, orderID model.OrderID, items []*model.OrderItem) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -276,18 +345,36 @@ func (s *OrderService) checkOrderNotSent(ctx context.Context, orderID model.Orde
 	defer tx.Rollback(ctx)
 	qtx := s.queries.WithTx(tx)
 
-	order, err := qtx.GetOrderForShare(ctx, repository.GetOrderForShareParams{
-		TabID:    uuid.UUID(orderID.TabID),
-		ScopedID: int16(orderID.Scoped),
-	})
-	if err != nil {
+	if err := qtx.DeleteOrderItems(ctx, repository.DeleteOrderItemsParams{
+		TabID:   uuid.UUID(orderID.TabID),
+		OrderID: int16(orderID.Scoped),
+	}); err != nil {
 		return err
 	}
-	if order.SentAt.Valid {
-		return errors.New("order is already sent")
+
+	params := make([]repository.CreateOrderItemsParams, len(items))
+	for i, item := range items {
+		guestOwners := make([]int16, len(item.GuestOwnerIDs))
+		for i, id := range item.GuestOwnerIDs {
+			guestOwners[i] = int16(id.Scoped)
+		}
+		customerOwners := make([]uuid.UUID, len(item.CustomerOwnerIDs))
+		for i, id := range item.CustomerOwnerIDs {
+			customerOwners[i] = uuid.UUID(id)
+		}
+		params[i] = repository.CreateOrderItemsParams{
+			TabID:          uuid.UUID(item.ID.OrderID.TabID),
+			OrderID:        int16(item.ID.OrderID.Scoped),
+			ScopedID:       int16(item.ID.Scoped),
+			MenuItemID:     int16(item.MenuItemID),
+			Quantity:       item.Quantity,
+			Modifiers:      item.Modifiers,
+			GuestOwners:    guestOwners,
+			CustomerOwners: customerOwners,
+		}
 	}
 
-	if err := do(qtx); err != nil {
+	if _, err := qtx.CreateOrderItems(ctx, params); err != nil {
 		return err
 	}
 

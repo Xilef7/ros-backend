@@ -27,6 +27,27 @@ func (t Tab) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (t *Tab) UnmarshalJSON(data []byte) error {
+	type Alias Tab
+	var v struct {
+		ID string `json:"id"`
+		*Alias
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	id, err := ParseTabID(v.ID)
+	if err != nil {
+		return err
+	}
+
+	v.Alias.ID = id
+	*t = Tab(*v.Alias)
+
+	return nil
+}
+
 // Order represents a group of items ordered together
 type Order struct {
 	ID     OrderID      `json:"id"`
@@ -43,6 +64,27 @@ func (o Order) MarshalJSON() ([]byte, error) {
 		ID:    o.ID.String(),
 		Alias: (*Alias)(&o),
 	})
+}
+
+func (o *Order) UnmarshalJSON(data []byte) error {
+	type Alias Order
+	var v struct {
+		ID string `json:"id"`
+		*Alias
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	id, err := ParseOrderID(v.ID)
+	if err != nil {
+		return err
+	}
+
+	v.Alias.ID = id
+	*o = Order(*v.Alias)
+
+	return nil
 }
 
 // OrderItem represents a single item in an order
@@ -72,6 +114,34 @@ func (oi OrderItem) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (oi *OrderItem) UnmarshalJSON(data []byte) error {
+	type Alias OrderItem
+	var v struct {
+		ID         string `json:"id"`
+		MenuItemID string `json:"menu_item_id"`
+		*Alias
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	id, err := ParseOrderItemID(v.ID)
+	if err != nil {
+		return err
+	}
+
+	menuItemID, err := ParseMenuItemID(v.MenuItemID)
+	if err != nil {
+		return err
+	}
+
+	v.Alias.ID = id
+	v.Alias.MenuItemID = menuItemID
+	*oi = OrderItem(*v.Alias)
+
+	return nil
+}
+
 // Guest represents an unregistered person dining in the restaurant
 type Guest struct {
 	ID         GuestID `json:"id"`
@@ -87,6 +157,27 @@ func (g Guest) MarshalJSON() ([]byte, error) {
 		ID:    g.ID.String(),
 		Alias: (*Alias)(&g),
 	})
+}
+
+func (g *Guest) UnmarshalJSON(data []byte) error {
+	type Alias Guest
+	var v struct {
+		ID string `json:"id"`
+		*Alias
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	id, err := ParseGuestID(v.ID)
+	if err != nil {
+		return err
+	}
+
+	v.Alias.ID = id
+	*g = Guest(*v.Alias)
+
+	return nil
 }
 
 // Customer represents a registered person dining in the restaurant
@@ -110,6 +201,27 @@ func (c Customer) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (c *Customer) UnmarshalJSON(data []byte) error {
+	type Alias Customer
+	var v struct {
+		ID string `json:"id"`
+		*Alias
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	id, err := ParseCustomerID(v.ID)
+	if err != nil {
+		return err
+	}
+
+	v.Alias.ID = id
+	*c = Customer(*v.Alias)
+
+	return nil
+}
+
 // MenuItem represents a food or drink item available for ordering
 type MenuItem struct {
 	ID              MenuItemID `json:"id"`
@@ -125,15 +237,36 @@ type MenuItem struct {
 	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
 }
 
-func (mi MenuItem) MarshalJSON() ([]byte, error) {
+func (mt MenuItem) MarshalJSON() ([]byte, error) {
 	type Alias MenuItem
 	return json.Marshal(&struct {
 		ID string `json:"id"`
 		*Alias
 	}{
-		ID:    mi.ID.String(),
-		Alias: (*Alias)(&mi),
+		ID:    mt.ID.String(),
+		Alias: (*Alias)(&mt),
 	})
+}
+
+func (mt *MenuItem) UnmarshalJSON(data []byte) error {
+	type Alias MenuItem
+	var v struct {
+		ID string `json:"id"`
+		*Alias
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	id, err := ParseMenuItemID(v.ID)
+	if err != nil {
+		return err
+	}
+
+	v.Alias.ID = id
+	*mt = MenuItem(*v.Alias)
+
+	return nil
 }
 
 // MenuTag represents a label for categorizing menu items
@@ -147,15 +280,36 @@ type MenuTag struct {
 	UpdatedAt     time.Time        `json:"updated_at"`
 }
 
-func (mt MenuTag) MarshalJSON() ([]byte, error) {
+func (mtd MenuTag) MarshalJSON() ([]byte, error) {
 	type Alias MenuTag
 	return json.Marshal(&struct {
 		ID string `json:"id"`
 		*Alias
 	}{
-		ID:    mt.ID.String(),
-		Alias: (*Alias)(&mt),
+		ID:    mtd.ID.String(),
+		Alias: (*Alias)(&mtd),
 	})
+}
+
+func (mtd *MenuTag) UnmarshalJSON(data []byte) error {
+	type Alias MenuTag
+	var v struct {
+		ID string `json:"id"`
+		*Alias
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	id, err := ParseMenuTagID(v.ID)
+	if err != nil {
+		return err
+	}
+
+	v.Alias.ID = id
+	*mtd = MenuTag(*v.Alias)
+
+	return nil
 }
 
 // MenuTagDimension represents a category for menu tags
@@ -176,6 +330,27 @@ func (mtd MenuTagDimension) MarshalJSON() ([]byte, error) {
 		ID:    mtd.ID.String(),
 		Alias: (*Alias)(&mtd),
 	})
+}
+
+func (mtd *MenuTagDimension) UnmarshalJSON(data []byte) error {
+	type Alias MenuTagDimension
+	var v struct {
+		ID string `json:"id"`
+		*Alias
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	id, err := ParseMenuTagDimensionID(v.ID)
+	if err != nil {
+		return err
+	}
+
+	v.Alias.ID = id
+	*mtd = MenuTagDimension(*v.Alias)
+
+	return nil
 }
 
 type CreateCustomerParams struct {

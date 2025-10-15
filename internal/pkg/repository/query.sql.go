@@ -247,21 +247,10 @@ func (q *Queries) CreateOrderIDSequence(ctx context.Context, tabID uuid.UUID) er
 	return err
 }
 
-const createOrderItem = `-- name: CreateOrderItem :one
-WITH "seq" AS (
-    UPDATE "order_item_id_sequence" SET "value" = "value" + 1
-    WHERE "tab_id" = $1 AND "order_id" = $2
-    RETURNING "value"
-)
-INSERT INTO "order_item" ("tab_id", "order_id", "scoped_id", "menu_item_id", "quantity", "modifiers", "guest_owners", "customer_owners")
-SELECT $1, $2, "seq"."value", $3, $4, $5, $6, $7
-FROM "seq"
-RETURNING "scoped_id"
-`
-
-type CreateOrderItemParams struct {
+type CreateOrderItemsParams struct {
 	TabID          uuid.UUID   `json:"tab_id"`
 	OrderID        int16       `json:"order_id"`
+	ScopedID       int16       `json:"scoped_id"`
 	MenuItemID     int16       `json:"menu_item_id"`
 	Quantity       int16       `json:"quantity"`
 	Modifiers      []byte      `json:"modifiers"`
@@ -269,45 +258,21 @@ type CreateOrderItemParams struct {
 	CustomerOwners []uuid.UUID `json:"customer_owners"`
 }
 
-func (q *Queries) CreateOrderItem(ctx context.Context, arg CreateOrderItemParams) (int16, error) {
-	row := q.db.QueryRow(ctx, createOrderItem,
-		arg.TabID,
-		arg.OrderID,
-		arg.MenuItemID,
-		arg.Quantity,
-		arg.Modifiers,
-		arg.GuestOwners,
-		arg.CustomerOwners,
-	)
-	var scoped_id int16
-	err := row.Scan(&scoped_id)
-	return scoped_id, err
-}
-
-const createOrderItemIDSequence = `-- name: CreateOrderItemIDSequence :exec
-INSERT INTO "order_item_id_sequence" ("tab_id", "order_id") VALUES ($1, $2)
-`
-
-type CreateOrderItemIDSequenceParams struct {
-	TabID   uuid.UUID `json:"tab_id"`
-	OrderID int16     `json:"order_id"`
-}
-
-func (q *Queries) CreateOrderItemIDSequence(ctx context.Context, arg CreateOrderItemIDSequenceParams) error {
-	_, err := q.db.Exec(ctx, createOrderItemIDSequence, arg.TabID, arg.OrderID)
-	return err
-}
-
 const createTab = `-- name: CreateTab :one
 INSERT INTO "tab" DEFAULT VALUES
-RETURNING "id"
+RETURNING "id", "created_at"
 `
 
-func (q *Queries) CreateTab(ctx context.Context) (uuid.UUID, error) {
+type CreateTabRow struct {
+	ID        uuid.UUID        `json:"id"`
+	CreatedAt pgtype.Timestamp `json:"created_at"`
+}
+
+func (q *Queries) CreateTab(ctx context.Context) (CreateTabRow, error) {
 	row := q.db.QueryRow(ctx, createTab)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
+	var i CreateTabRow
+	err := row.Scan(&i.ID, &i.CreatedAt)
+	return i, err
 }
 
 const deleteGuestIDSequence = `-- name: DeleteGuestIDSequence :exec
@@ -319,28 +284,13 @@ func (q *Queries) DeleteGuestIDSequence(ctx context.Context, tabID uuid.UUID) er
 	return err
 }
 
-const deleteNotSentOrders = `-- name: DeleteNotSentOrders :many
-DELETE FROM "order" WHERE "tab_id" = $1 AND "sent_at" IS NULL RETURNING "scoped_id"
+const deleteNotSentOrders = `-- name: DeleteNotSentOrders :exec
+DELETE FROM "order" WHERE "tab_id" = $1 AND "sent_at" IS NULL
 `
 
-func (q *Queries) DeleteNotSentOrders(ctx context.Context, tabID uuid.UUID) ([]int16, error) {
-	rows, err := q.db.Query(ctx, deleteNotSentOrders, tabID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []int16
-	for rows.Next() {
-		var scoped_id int16
-		if err := rows.Scan(&scoped_id); err != nil {
-			return nil, err
-		}
-		items = append(items, scoped_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+func (q *Queries) DeleteNotSentOrders(ctx context.Context, tabID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteNotSentOrders, tabID)
+	return err
 }
 
 const deleteOrderIDSequence = `-- name: DeleteOrderIDSequence :exec
@@ -368,17 +318,17 @@ func (q *Queries) DeleteOrderItem(ctx context.Context, arg DeleteOrderItemParams
 	return err
 }
 
-const deleteOrderItemIDSequence = `-- name: DeleteOrderItemIDSequence :exec
-DELETE FROM "order_item_id_sequence" WHERE "tab_id" = $1 AND "order_id" = $2
+const deleteOrderItems = `-- name: DeleteOrderItems :exec
+DELETE FROM "order_item" WHERE "tab_id" = $1 AND "order_id" = $2
 `
 
-type DeleteOrderItemIDSequenceParams struct {
+type DeleteOrderItemsParams struct {
 	TabID   uuid.UUID `json:"tab_id"`
 	OrderID int16     `json:"order_id"`
 }
 
-func (q *Queries) DeleteOrderItemIDSequence(ctx context.Context, arg DeleteOrderItemIDSequenceParams) error {
-	_, err := q.db.Exec(ctx, deleteOrderItemIDSequence, arg.TabID, arg.OrderID)
+func (q *Queries) DeleteOrderItems(ctx context.Context, arg DeleteOrderItemsParams) error {
+	_, err := q.db.Exec(ctx, deleteOrderItems, arg.TabID, arg.OrderID)
 	return err
 }
 
@@ -428,6 +378,29 @@ SELECT id, name, description, photo_pathinfo, price, portion_size, available, mo
 
 func (q *Queries) GetMenuItem(ctx context.Context, id int16) (MenuItem, error) {
 	row := q.db.QueryRow(ctx, getMenuItem, id)
+	var i MenuItem
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.PhotoPathinfo,
+		&i.Price,
+		&i.PortionSize,
+		&i.Available,
+		&i.ModifiersConfig,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getNotDeletedMenuItem = `-- name: GetNotDeletedMenuItem :one
+SELECT id, name, description, photo_pathinfo, price, portion_size, available, modifiers_config, created_at, updated_at, deleted_at FROM "menu_item" WHERE "id" = $1 AND "deleted_at" IS NULL
+`
+
+func (q *Queries) GetNotDeletedMenuItem(ctx context.Context, id int16) (MenuItem, error) {
+	row := q.db.QueryRow(ctx, getNotDeletedMenuItem, id)
 	var i MenuItem
 	err := row.Scan(
 		&i.ID,
@@ -497,6 +470,27 @@ func (q *Queries) GetOrderForShare(ctx context.Context, arg GetOrderForSharePara
 	return i, err
 }
 
+const getOrderWithItems = `-- name: GetOrderWithItems :one
+SELECT tab_id, scoped_id, sent_at, items FROM "order_with_items" WHERE "tab_id" = $1 AND "scoped_id" = $2
+`
+
+type GetOrderWithItemsParams struct {
+	TabID    uuid.UUID `json:"tab_id"`
+	ScopedID int16     `json:"scoped_id"`
+}
+
+func (q *Queries) GetOrderWithItems(ctx context.Context, arg GetOrderWithItemsParams) (OrderWithItems, error) {
+	row := q.db.QueryRow(ctx, getOrderWithItems, arg.TabID, arg.ScopedID)
+	var i OrderWithItems
+	err := row.Scan(
+		&i.TabID,
+		&i.ScopedID,
+		&i.SentAt,
+		&i.Items,
+	)
+	return i, err
+}
+
 const getTabForNoKeyUpdate = `-- name: GetTabForNoKeyUpdate :one
 SELECT id, total_price, created_at, closed_at, guest_names FROM "tab" WHERE "id" = $1 FOR NO KEY UPDATE
 `
@@ -527,6 +521,56 @@ func (q *Queries) GetTabForShare(ctx context.Context, id uuid.UUID) (Tab, error)
 		&i.CreatedAt,
 		&i.ClosedAt,
 		&i.GuestNames,
+	)
+	return i, err
+}
+
+const getTabWithOrdersForShare = `-- name: GetTabWithOrdersForShare :one
+SELECT t.id, t.total_price, t.created_at, t.closed_at, t.guest_names, "o"."orders"
+FROM "tab" AS "t",
+(
+    SELECT json_agg("o") AS "orders"
+    FROM (
+        SELECT o.tab_id, o.scoped_id, o.sent_at, "oi"."items"
+        FROM "order" AS "o"
+        LEFT JOIN (
+            SELECT "oi"."order_id", json_agg("oi") AS "items" FROM (
+                SELECT oi.tab_id, oi.order_id, oi.scoped_id, oi.menu_item_id, oi.quantity, oi.modifiers, oi.guest_owners, oi.customer_owners, "mi"."name", "mi"."description", "mi"."photo_pathinfo", "mi"."price", "mi"."portion_size", "mi"."modifiers_config"
+                FROM "order_item" AS "oi"
+                JOIN "menu_item" AS "mi" ON "oi"."menu_item_id" = "mi"."id"
+                WHERE "oi"."tab_id" = $1
+                FOR SHARE
+            ) "oi"
+            GROUP BY "oi"."order_id"
+        ) "oi"
+        ON "o"."scoped_id" = "oi"."order_id"
+        WHERE "o"."tab_id" = $1
+        FOR SHARE OF "o"
+    ) "o"
+) "o"
+WHERE "t"."id" = $1
+FOR SHARE OF "t"
+`
+
+type GetTabWithOrdersForShareRow struct {
+	ID         uuid.UUID        `json:"id"`
+	TotalPrice int32            `json:"total_price"`
+	CreatedAt  pgtype.Timestamp `json:"created_at"`
+	ClosedAt   pgtype.Timestamp `json:"closed_at"`
+	GuestNames map[int16]string `json:"guest_names"`
+	Orders     []byte           `json:"orders"`
+}
+
+func (q *Queries) GetTabWithOrdersForShare(ctx context.Context, tabID uuid.UUID) (GetTabWithOrdersForShareRow, error) {
+	row := q.db.QueryRow(ctx, getTabWithOrdersForShare, tabID)
+	var i GetTabWithOrdersForShareRow
+	err := row.Scan(
+		&i.ID,
+		&i.TotalPrice,
+		&i.CreatedAt,
+		&i.ClosedAt,
+		&i.GuestNames,
+		&i.Orders,
 	)
 	return i, err
 }

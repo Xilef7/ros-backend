@@ -1,6 +1,6 @@
 -- name: CreateTab :one
 INSERT INTO "tab" DEFAULT VALUES
-RETURNING "id";
+RETURNING "id", "created_at";
 
 -- name: GetTabForShare :one
 SELECT * FROM "tab" WHERE "id" = $1 FOR SHARE;
@@ -12,6 +12,32 @@ SELECT * FROM "tab" WHERE "id" = $1 FOR NO KEY UPDATE;
 SELECT *
 FROM "tab_with_orders"
 WHERE "id" = $1 AND "closed_at" IS NULL;
+
+-- name: GetTabWithOrdersForShare :one
+SELECT "t".*, "o"."orders"
+FROM "tab" AS "t",
+(
+    SELECT json_agg("o") AS "orders"
+    FROM (
+        SELECT "o".*, "oi"."items"
+        FROM "order" AS "o"
+        LEFT JOIN (
+            SELECT "oi"."order_id", json_agg("oi") AS "items" FROM (
+                SELECT "oi".*, "mi"."name", "mi"."description", "mi"."photo_pathinfo", "mi"."price", "mi"."portion_size", "mi"."modifiers_config"
+                FROM "order_item" AS "oi"
+                JOIN "menu_item" AS "mi" ON "oi"."menu_item_id" = "mi"."id"
+                WHERE "oi"."tab_id" = $1
+                FOR SHARE
+            ) "oi"
+            GROUP BY "oi"."order_id"
+        ) "oi"
+        ON "o"."scoped_id" = "oi"."order_id"
+        WHERE "o"."tab_id" = $1
+        FOR SHARE OF "o"
+    ) "o"
+) "o"
+WHERE "t"."id" = $1
+FOR SHARE OF "t";
 
 -- name: GetVisitedTabsWithOrders :many
 SELECT t.*
@@ -85,28 +111,21 @@ SELECT * FROM "order" WHERE "tab_id" = $1 AND "scoped_id" = $2 FOR SHARE;
 -- name: GetOrderForNoKeyUpdate :one
 SELECT * FROM "order" WHERE "tab_id" = $1 AND "scoped_id" = $2 FOR NO KEY UPDATE;
 
+-- name: GetOrderWithItems :one
+SELECT * FROM "order_with_items" WHERE "tab_id" = $1 AND "scoped_id" = $2;
+
 -- name: SendOrder :exec
 UPDATE "order" SET "sent_at" = NOW() WHERE "tab_id" = $1 AND "scoped_id" = $2;
 
--- name: DeleteNotSentOrders :many
-DELETE FROM "order" WHERE "tab_id" = $1 AND "sent_at" IS NULL RETURNING "scoped_id";
+-- name: DeleteNotSentOrders :exec
+DELETE FROM "order" WHERE "tab_id" = $1 AND "sent_at" IS NULL;
 
--- name: CreateOrderItemIDSequence :exec
-INSERT INTO "order_item_id_sequence" ("tab_id", "order_id") VALUES ($1, $2);
+-- name: DeleteOrderItems :exec
+DELETE FROM "order_item" WHERE "tab_id" = $1 AND "order_id" = $2;
 
--- name: DeleteOrderItemIDSequence :exec
-DELETE FROM "order_item_id_sequence" WHERE "tab_id" = $1 AND "order_id" = $2;
-
--- name: CreateOrderItem :one
-WITH "seq" AS (
-    UPDATE "order_item_id_sequence" SET "value" = "value" + 1
-    WHERE "tab_id" = $1 AND "order_id" = $2
-    RETURNING "value"
-)
+-- name: CreateOrderItems :copyfrom
 INSERT INTO "order_item" ("tab_id", "order_id", "scoped_id", "menu_item_id", "quantity", "modifiers", "guest_owners", "customer_owners")
-SELECT $1, $2, "seq"."value", $3, $4, $5, $6, $7
-FROM "seq"
-RETURNING "scoped_id";
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: UpdateOrderItemQuantity :exec
 UPDATE "order_item" SET "quantity" = $4
@@ -170,6 +189,9 @@ RETURNING *;
 
 -- name: GetMenuItem :one
 SELECT * FROM "menu_item" WHERE "id" = $1;
+
+-- name: GetNotDeletedMenuItem :one
+SELECT * FROM "menu_item" WHERE "id" = $1 AND "deleted_at" IS NULL;
 
 -- name: ListMenuItems :many
 SELECT * FROM "menu_item" WHERE "deleted_at" IS NULL ORDER BY "name";
